@@ -1,0 +1,82 @@
+import pandas as pd
+import requests
+import time
+
+INPUT_FILE = "cleaned_addresses_for_geocoding_v3.csv"
+OUTPUT_FILE = "addresses_with_providers.csv"
+
+
+# -------------------------
+# Geocode address → lon/lat
+# -------------------------
+def geocode(address):
+    url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+
+    params = {
+        "f": "json",
+        "SingleLine": address,
+        "maxLocations": 1
+    }
+
+    r = requests.get(url, params=params).json()
+
+    if not r["candidates"]:
+        return None, None
+
+    loc = r["candidates"][0]["location"]
+    return loc["x"], loc["y"]
+
+
+# -------------------------
+# Coordinates → water provider
+# -------------------------
+def get_provider(lon, lat):
+    url = "https://www.portlandmaps.com/arcgis/rest/services/Public/Utilities_Water/MapServer/6/query"
+
+    params = {
+        "f": "json",
+        "where": "IsConsortiumMember='Yes'",
+        "geometry": f'{{"x":{lon},"y":{lat},"spatialReference":{{"wkid":4326}}}}',
+        "geometryType": "esriGeometryPoint",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "*",
+        "returnGeometry": "false"
+    }
+
+    r = requests.get(url, params=params).json()
+
+    features = r.get("features", [])
+    if not features:
+        return None
+
+    return features[0]["attributes"].get("WaterProvider")
+
+
+# -------------------------
+# MAIN
+# -------------------------
+df = pd.read_csv(INPUT_FILE)
+
+results = []
+
+print("Starting lookup...")
+
+for i, address in enumerate(df["full_address"]):
+    print(f"{i+1}/{len(df)}  →  {address}")
+
+    lon, lat = geocode(address)
+
+    if lon is None:
+        results.append((address, None))
+        continue
+
+    provider = get_provider(lon, lat)
+    results.append((address, provider))
+
+    time.sleep(0.25)  # be polite to servers
+
+out = pd.DataFrame(results, columns=["address", "water_provider"])
+out.to_csv(OUTPUT_FILE, index=False)
+
+print("\nDONE ✅")
+print(f"Saved to {OUTPUT_FILE}")
