@@ -1,0 +1,154 @@
+import pandas as pd
+from rapidfuzz import process, fuzz
+from multiprocessing import Pool, cpu_count, freeze_support
+
+# --- Normalization dictionaries ---
+ABBREVIATIONS = {
+    r"\bST\b": "STREET",
+    r"\bAVE\b": "AVENUE",
+    r"\bRD\b": "ROAD",
+    r"\bBLVD\b": "BOULEVARD",
+    r"\bDR\b": "DRIVE",
+    r"\bLN\b": "LANE",
+    r"\bCT\b": "COURT",
+    r"\bPL\b": "PLACE",
+    r"\bHWY\b": "HIGHWAY",
+}
+
+DIRECTIONS = {
+    r"\bN\b": "NORTH",
+    r"\bS\b": "SOUTH",
+    r"\bE\b": "EAST",
+    r"\bW\b": "WEST",
+    r"\bNE\b": "NORTHEAST",
+    r"\bNW\b": "NORTHWEST",
+    r"\bSE\b": "SOUTHEAST",
+    r"\bSW\b": "SOUTHWEST",
+}
+
+# --- Extract street only (NEW 🔥) ---
+def extract_street(series):
+    return series.str.split(",").str[0]
+
+# --- Normalize function ---
+def normalize_address(series):
+    s = (
+        series.str.upper()
+        .str.strip()
+        .str.replace(r"[^\w\s]", "", regex=True)
+        .str.replace(r"\s+", " ", regex=True)
+    )
+
+    for pattern, replacement in ABBREVIATIONS.items():
+        s = s.str.replace(pattern, replacement, regex=True)
+
+    for pattern, replacement in DIRECTIONS.items():
+        s = s.str.replace(pattern, replacement, regex=True)
+
+    return s
+
+# --- Worker initializer ---
+def init_worker(zip_groups):
+    global ZIP_GROUPS
+    ZIP_GROUPS = zip_groups
+
+# --- Worker function ---
+def fuzzy_worker(row_dict):
+    addr = row_dict["ADDR_NORM"]
+    zip_code = row_dict["ZIP_CODE"]
+
+    if pd.isna(zip_code) or zip_code not in ZIP_GROUPS:
+        return (None, None, None)
+
+    group = ZIP_GROUPS[zip_code]
+    choices = group["ADDR_NORM"].tolist()
+    prop_map = dict(zip(group["ADDR_NORM"], group["PROPERTY_ID"]))
+
+    match = process.extractOne(
+        addr,
+        choices,
+        scorer=fuzz.token_sort_ratio,
+        score_cutoff=85
+    )
+
+    if match:
+        matched_addr, score, _ = match
+        return (prop_map.get(matched_addr), score, "fuzzy")
+
+    return (None, None, None)
+
+# --- MAIN ---
+def main():
+    file_large = "Active_Address_Points.csv"
+    file_small = "cleaned_addresses.csv"
+
+    # Load data
+    df_large = pd.read_csv(
+        file_large,
+        usecols=["ADDRESS_FULL", "PROPERTY_ID", "ZIP_CODE"],
+        dtype=str
+    )
+
+    df_small = pd.read_csv(file_small, dtype=str)
+
+    # --- 🔥 EXTRACT STREET ONLY ---
+    df_large["STREET_ONLY"] = extract_street(df_large["ADDRESS_FULL"])
+    df_small["STREET_ONLY"] = extract_street(df_small["full_address"])
+
+    # Normalize
+    df_large["ADDR_NORM"] = normalize_address(df_large["STREET_ONLY"])
+    df_small["ADDR_NORM"] = normalize_address(df_small["STREET_ONLY"])
+
+    # Extract ZIP from small dataset
+    df_small["ZIP_CODE"] = df_small["full_address"].str.extract(r"(\b\d{5}\b)")
+
+    # --- EXACT MATCH ---
+    merged = df_small.merge(
+        df_large[["ADDR_NORM", "PROPERTY_ID"]],
+        on="ADDR_NORM",
+        how="left"
+    )
+
+    merged["match_type"] = merged["PROPERTY_ID"].apply(
+        lambda x: "exact" if pd.notna(x) else None
+    )
+    merged["match_score"] = None
+
+    # --- ZIP GROUPS ---
+    zip_groups = {
+        zip_code: group[["ADDR_NORM", "PROPERTY_ID"]]
+        for zip_code, group in df_large.groupby("ZIP_CODE")
+    }
+
+    # --- FUZZY MATCH ---
+    unmatched = merged[merged["PROPERTY_ID"].isna()].copy()
+    print(f"Unmatched rows before fuzzy: {len(unmatched)}")
+
+    rows = unmatched[["ADDR_NORM", "ZIP_CODE"]].to_dict(orient="records")
+
+    with Pool(
+        cpu_count(),
+        initializer=init_worker,
+        initargs=(zip_groups,)
+    ) as pool:
+        results = pool.map(fuzzy_worker, rows)
+
+    unmatched["PROPERTY_ID"] = [r[0] for r in results]
+    unmatched["match_score"] = [r[1] for r in results]
+    unmatched["match_type"] = [r[2] for r in results]
+
+    print(f"Recovered with fuzzy: {sum(pd.notna(unmatched['PROPERTY_ID']))}")
+
+    # --- COMBINE ---
+    merged.update(unmatched)
+
+    # --- OUTPUT ---
+    result = merged[["full_address", "PROPERTY_ID", "match_type", "match_score"]]
+    result.to_csv("matched_addresses_final.csv", index=False)
+
+    print("Done! Output saved to matched_addresses_final.csv")
+
+# --- ENTRY POINT ---
+if __name__ == "__main__":
+    freeze_support()
+    main()
