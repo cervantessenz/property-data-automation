@@ -1,0 +1,84 @@
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# --- Load data ---
+df = pd.read_csv("matched_addresses_final.csv")
+df["sewer_provider"] = None
+
+# --- Setup ---
+driver = webdriver.Chrome()
+wait = WebDriverWait(driver, 20)
+
+# --- Test limit ---
+limit = None  # set to None for full run
+
+for i, row in df.iterrows():
+
+    if limit is not None and i >= limit:
+        break
+
+    property_id = row["PROPERTY_ID"]
+
+    if pd.isna(property_id):
+        continue
+
+    try:
+        driver.get("https://www.portlandmaps.com/")
+
+        # --- Search ---
+        search_box = wait.until(
+            EC.presence_of_element_located((By.ID, "search_input"))
+        )
+
+        search_box.clear()
+        search_box.send_keys(property_id)
+        search_box.send_keys(Keys.RETURN)
+
+        print(f"[{i}] Searching {property_id}")
+
+        wait.until(EC.url_contains("detail"))
+
+        # --- Click Utilities ---
+        utilities_button = wait.until(
+            EC.element_to_be_clickable(
+                (By.XPATH, "//a[@href='#detail-collapse-utilities']")
+            )
+        )
+
+        driver.execute_script("arguments[0].click();", utilities_button)
+
+        # --- Wait for blockquote (this guarantees content is ready) ---
+        blockquote = wait.until(
+            EC.visibility_of_element_located(
+                (
+                    By.XPATH,
+                    "//div[@id='detail-collapse-utilities']//h5[normalize-space()='Sewer & Environmental']/following::blockquote[1]"
+                )
+            )
+        )
+
+        # --- Extract provider or fallback ---
+        strong_elements = blockquote.find_elements(By.TAG_NAME, "strong")
+
+        if strong_elements:
+            provider = strong_elements[0].text.strip()
+        else:
+            provider = "No information"
+
+        print(f"→ Provider extracted: {provider}")
+
+        df.at[i, "sewer_provider"] = provider
+
+    except Exception as e:
+        print(f"Error with {property_id}: {e}")
+        df.at[i, "sewer_provider"] = "No information"
+        continue
+
+# --- Save results ---
+df.to_csv("final_with_sewer_provider.csv", index=False)
+
+print("Done! Output saved to final_with_sewer_provider.csv")
