@@ -1,0 +1,77 @@
+import pandas as pd
+import requests
+import time
+
+INPUT_FILE = "cleaned_addresses_for_geocoding_v3.csv"
+OUTPUT_FILE = "gas_providers.csv"
+
+
+def geocode(address):
+    url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+
+    params = {
+        "f": "json",
+        "SingleLine": address,
+        "maxLocations": 1
+    }
+
+    r = requests.get(url, params=params).json()
+
+    if not r["candidates"]:
+        return None, None
+
+    loc = r["candidates"][0]["location"]
+    return loc["x"], loc["y"]
+
+
+def get_gas_provider(lon, lat):
+
+    url = "https://services.arcgis.com/uUvqNMGPm7axC2dD/ArcGIS/rest/services/Natural_Gas_Service_Territories_OR/FeatureServer/0/query"
+
+    params = {
+        "f": "json",
+        "geometry": f'{{"x":{lon},"y":{lat},"spatialReference":{{"wkid":4326}}}}',
+        "geometryType": "esriGeometryPoint",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "*"
+    }
+
+    r = requests.get(url, params=params).json()
+
+    features = r.get("features", [])
+    if not features:
+        return None
+
+    attrs = features[0]["attributes"]
+    return attrs.get("NAME")
+
+
+# -------------------------
+# MAIN
+# -------------------------
+df = pd.read_csv(INPUT_FILE)
+
+results = []
+
+print("Starting gas lookup...\n")
+
+for i, address in enumerate(df["full_address"]):  # test first
+    print(f"{i+1}/5 → {address}")
+
+    lon, lat = geocode(address)
+
+    if lon is None:
+        results.append((address, None))
+        continue
+
+    gas = get_gas_provider(lon, lat)
+    results.append((address, gas))
+
+    time.sleep(0.15)
+
+
+out = pd.DataFrame(results, columns=["address", "gas_provider"])
+out.to_csv(OUTPUT_FILE, index=False)
+
+print("\nDONE ✅")
+print("Saved to gas_providers.csv")
