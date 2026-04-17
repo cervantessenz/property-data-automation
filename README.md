@@ -6,7 +6,7 @@ Automation scripts for property data processing, including utility provider look
 
 ## 📌 Overview
 
-This repository contains a set of Python scripts designed to automate the enrichment of property data. It replaces manual workflows by programmatically identifying utility providers and linking property records using geocoding, GIS services, fuzzy matching, and web scraping.
+This repository contains a set of Python scripts designed to automate property data retrieval from several websites. It replaces manual workflows by programmatically identifying utility providers and linking property records using geocoding, GIS services, fuzzy matching, and web scraping.
 
 ---
 
